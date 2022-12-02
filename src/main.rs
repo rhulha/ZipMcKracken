@@ -1,8 +1,9 @@
-use std::fs;
 //use std::fs::File;
 //use std::io::Read;
 use flate2::write::DeflateDecoder;
 use std::io::Write;
+use std::io::Cursor;
+use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
 
 mod crctable;
 
@@ -23,10 +24,57 @@ fn decrypt_byte(keys: [u32; 3]) -> u8 {
     return ((temp.wrapping_mul(temp ^ 1)) >> 8) as u8;
 }
 
-fn main() {
-    println!("ZipMcKracken running...");
+struct ZipFileRecord {
+    pub signature: u32,
+    pub version: u16,
+    pub flags: u16,
+    pub compression: u16,
+    pub time: u16,
+    pub date: u16,
+    pub c3c: u32,
+    pub compressed_size: u32,
+    pub uncompressed_size: u32,
+    pub filename_length: u16,
+    pub extra_field_length: u16,
+    //pub filename: [u8; ZipFileRecord::filename_length],
+}
 
-    let password = b"ENTER";
+fn read_zip_file_record(data:&[u8]) -> ZipFileRecord {
+    let mut zfr = ZipFileRecord {
+        signature: 0,
+        version: 0,
+        flags: 0,
+        compression: 0,
+        time: 0,
+        date: 0,
+        c3c: 0,
+        compressed_size: 0,
+        uncompressed_size: 0,
+        filename_length: 0,
+        extra_field_length: 0,
+    };
+
+    let mut cursor = Cursor::new(data);
+
+    zfr.signature = cursor.read_u32::<BigEndian>().unwrap();
+    zfr.version = cursor.read_u16::<LittleEndian>().unwrap();
+    zfr.flags = cursor.read_u16::<LittleEndian>().unwrap();
+    zfr.compression = cursor.read_u16::<LittleEndian>().unwrap();
+    zfr.time = cursor.read_u16::<LittleEndian>().unwrap();
+    zfr.date = cursor.read_u16::<LittleEndian>().unwrap();
+    zfr.c3c = cursor.read_u32::<LittleEndian>().unwrap();
+    zfr.compressed_size = cursor.read_u32::<LittleEndian>().unwrap();
+    zfr.uncompressed_size = cursor.read_u32::<LittleEndian>().unwrap();
+    zfr.filename_length = cursor.read_u16::<LittleEndian>().unwrap();
+    zfr.extra_field_length = cursor.read_u16::<LittleEndian>().unwrap();
+
+    
+    return zfr;
+}
+
+fn try2decrypt(data: & mut[u8], password: &[u8], crc: u32) -> bool {
+
+    println!("data len: {}", data.len());
 
     let mut keys: [u32; 3] = [0; 3];
     keys[0] = 0x12345678;
@@ -37,11 +85,7 @@ fn main() {
         update_keys(&mut keys, password[i])
     }
 
-    // encrypted_data.bin is the secret, encrypted and compressed key.jpg PAYLOAD ONLY WITHOUT ANY STANDARD ZIP HEADERS found inside Mx.png
-
-    let mut data = std::fs::read("encrypted_data.bin").unwrap();
-
-    // 12-byte encryption header
+    // The data contains a random 12-byte encryption header
     // Upon decryption, the first 12 bytes need to be discarded.
     // According to the specification, this is done in order to render a plaintext attack on the data ineffective.
     // The specification also states that out of the 12 prepended bytes, only the first 11 are actually random,
@@ -59,23 +103,9 @@ fn main() {
 
     println!("high order byte {:X?}", data[11]); // FULL CRC: 0xAB8C0EC3, so this print should give 0xAB
 
-    let path = std::path::Path::new("unencrypted.zip");
-    let mut file = match fs::File::create(path) {
-        Err(why) => panic!("couldn't open file: {}", why),
-        Ok(file) => file,
-    };
-
-    let zip_header = std::fs::read("zip_header.bin").unwrap();
-    file.write_all(&zip_header).expect("Unable to write file");
-
-    file.write_all(&data[12..data.len()])
-        .expect("Unable to write file");
-
-    println!("data len: {}", data.len());
-
-    let zip_footer = std::fs::read("zip_footer.bin").unwrap();
-    file.write_all(&zip_footer).expect("Unable to write file");
-
+    if data[11] != (crc >> 24) as u8 {
+        return false;
+    }
 
     println!("First deflated byte {:X?}", data[12]);
 
@@ -88,5 +118,106 @@ fn main() {
 
     println!("checksum: {:X?}", checksum); // FULL CRC: 0xAB8C0EC3
 
-    //fs::write("unencrypted.bin", &data[12..data.len()]).expect("Unable to write file");
+    return checksum == crc;
+
+}
+
+fn main() {
+    println!("ZipMcKracken running...");
+
+    let mut data = std::fs::read("test.zip").unwrap();
+
+    // let s = std::mem::size_of::<ZipFileRecord>();
+    // println!("size_of ZipFileRecord: {}", s);
+    // wrong due to allignment issue
+
+    let zfr = read_zip_file_record( &data );
+
+    println!("signature: {:X?}", zfr.signature);
+    println!("version: {:?}", zfr.version);
+    println!("flags: {:X?}", zfr.flags);
+    println!("compression: {:X?}", zfr.compression);
+    println!("time: {:X?}", zfr.time); // winstructs::timestamp::DosTime
+    println!("date: {:X?}", zfr.date);
+    println!("c3c: {:X?}", zfr.c3c);
+    println!("compressed_size: {:?}", zfr.compressed_size);
+    println!("uncompressed_size: {:?}", zfr.uncompressed_size);
+    println!("filename_length: {:?}", zfr.filename_length);
+    println!("extra_field_length: {:?}", zfr.extra_field_length);
+
+    let zip_file_record_size = 30;
+    let filename_end = zip_file_record_size + zfr.filename_length as usize;
+    let filename = &data[zip_file_record_size..filename_end];
+
+    println!("filename: {:?}", filename);
+
+    let extra = &data[filename_end..(filename_end + zfr.extra_field_length as usize)];
+
+    let start_of_data = filename_end + zfr.extra_field_length as usize;
+    
+    println!("extra: {:?}", extra);
+
+    let valid_letters = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+
+    for pw_len in 1..9 {
+        let mut password : Vec<u8> = Vec::new();
+        let mut password_counter : Vec<u8> = Vec::new();
+        for _j in 0..pw_len {
+            password_counter.push(0);
+        }
+        for _j in 0..pw_len {
+            password.push(valid_letters[0]);
+        }
+        loop {
+            println!("password_counter: {:?}", password_counter);
+
+            for j in 0..pw_len {
+                password[j] = valid_letters[password_counter[j] as usize];
+            }
+            println!("password: {:?}", std::str::from_utf8(&password).unwrap());
+
+
+            let mut counter = 0;
+            let mut pos=0;
+            for i in (0..pw_len).rev() {
+                if password_counter[i] == (valid_letters.len() - 1) as u8 {
+                    counter += 1;
+                } else {
+                    pos = i;
+                    break;
+                }
+            }
+
+            println!("pos: {:?}", pos);
+
+            password_counter[pos] += 1;
+
+            println!("password_counter after inc: {:?}", password_counter);
+
+            if password_counter[pos] == valid_letters.len() as u8 {
+                println!("overflow");
+                if pos > 0 {
+                    password_counter[pos-1] += 1;
+                }
+                password_counter[pos] = 0;
+                println!("password_counter after overflow: {:?}", password_counter);
+            }
+
+            if counter == pw_len {
+                println!("we have reached the max password for this pw_len");
+                break; // we have reached the max password for this pw_len
+            }
+        }
+        if 4>5{
+            let result = try2decrypt(& mut data[start_of_data..start_of_data+zfr.compressed_size as usize], &password, zfr.c3c);
+            if result {
+                println!("password: {:?}", password);
+                return;
+            } else {
+                println!("password: {:?}", password);
+            }
+            println!("result: {:?}", result);
+        }
+    }
+
 }
