@@ -95,18 +95,23 @@ fn try2decrypt(data: & mut[u8], password: &[u8], crc: u32) -> bool {
     // by comparing the last byte of the decrypted 12 byte header to the high order byte of the actual
     // CRC-32 value that is included in the local file header.
 
-    for i in 0..data.len() {
+    for i in 0..12 {
+        let temp = data[i] ^ decrypt_byte(keys);
+        update_keys(&mut keys, temp);
+        data[i] = temp;
+    }
+
+    if data[11] != (crc >> 24) as u8 {
+        return false;
+    }
+
+    for i in 12..data.len() {
         let temp = data[i] ^ decrypt_byte(keys);
         update_keys(&mut keys, temp);
         data[i] = temp;
     }
 
     // println!("high order byte {:X?}", data[11]); // FULL CRC: 0xAB8C0EC3, so this print should give 0xAB
-
-    if data[11] != (crc >> 24) as u8 {
-        return false;
-    }
-
     // println!("First deflated byte {:X?}", data[12]);
 
     let mut deflated: Vec<u8> = Vec::new();
@@ -197,7 +202,7 @@ fn main() {
                 return;
             } else {
                 counter += 1;
-                if counter % 100 == 0 {
+                if counter % 100000 == 0 {
                     let password_string = get_password_string(&password);
                     println!("password wrong: {:?}", password_string);
                 }
