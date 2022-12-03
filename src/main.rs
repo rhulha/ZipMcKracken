@@ -13,7 +13,7 @@ fn crc(crc: u32, input: u8) -> u32 {
 
 fn update_keys(keys: &mut [u32; 3], c: u8) {
     keys[0] = crc(keys[0], c);
-    keys[1] = keys[1] + (keys[0] & 0xff);
+    keys[1] = keys[1].wrapping_add(keys[0] & 0xff);
     // keys[1] = keys[1] * 134775813 + 1;
     keys[1] = keys[1].wrapping_mul(134775813) + 1;
     keys[2] = crc(keys[2], (keys[1] >> 24) as u8);
@@ -74,7 +74,7 @@ fn read_zip_file_record(data:&[u8]) -> ZipFileRecord {
 
 fn try2decrypt(data: & mut[u8], password: &[u8], crc: u32) -> bool {
 
-    println!("data len: {}", data.len());
+    // println!("data len: {}", data.len());
 
     let mut keys: [u32; 3] = [0; 3];
     keys[0] = 0x12345678;
@@ -101,17 +101,21 @@ fn try2decrypt(data: & mut[u8], password: &[u8], crc: u32) -> bool {
         data[i] = temp;
     }
 
-    println!("high order byte {:X?}", data[11]); // FULL CRC: 0xAB8C0EC3, so this print should give 0xAB
+    // println!("high order byte {:X?}", data[11]); // FULL CRC: 0xAB8C0EC3, so this print should give 0xAB
 
     if data[11] != (crc >> 24) as u8 {
         return false;
     }
 
-    println!("First deflated byte {:X?}", data[12]);
+    // println!("First deflated byte {:X?}", data[12]);
 
     let mut deflated: Vec<u8> = Vec::new();
     let mut deflater = DeflateDecoder::new(deflated);
-    deflater.write_all(&data[12..data.len()]).unwrap();
+    let result = deflater.write_all(&data[12..data.len()]);
+    if result.is_err() {
+        return false;
+    }
+    // .unwrap();
     deflated = deflater.finish().unwrap();
 
     let checksum = crc32fast::hash(&deflated);
@@ -120,6 +124,25 @@ fn try2decrypt(data: & mut[u8], password: &[u8], crc: u32) -> bool {
 
     return checksum == crc;
 
+}
+
+const VALID_LETTERS: &[u8;62] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+
+fn get_password_string(password : &[u8]) -> String {
+    let mut password_chars : Vec<u8> = Vec::new();
+    for i in 0..password.len() {
+        password_chars.push(VALID_LETTERS[password[i] as usize]);
+    }
+    let s = std::str::from_utf8(&password_chars).unwrap();
+    return s.to_string();
+}
+
+fn get_password_char_array(password : &[u8]) -> Vec<u8> {
+    let mut password_chars : Vec<u8> = Vec::new();
+    for i in 0..password.len() {
+        password_chars.push(VALID_LETTERS[password[i] as usize]);
+    }
+    return password_chars
 }
 
 fn main() {
@@ -157,66 +180,49 @@ fn main() {
     
     println!("extra: {:?}", extra);
 
-    let valid_letters = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    let mut counter: u64 = 0;
 
     for pw_len in 1..9 {
         let mut password : Vec<u8> = Vec::new();
-        let mut password_counter : Vec<u8> = Vec::new();
-        for _j in 0..pw_len {
-            password_counter.push(0);
-        }
-        for _j in 0..pw_len {
-            password.push(valid_letters[0]);
+        for _i in 0..pw_len {
+            password.push(0);
         }
         loop {
-            println!("password_counter: {:?}", password_counter);
-
-            for j in 0..pw_len {
-                password[j] = valid_letters[password_counter[j] as usize];
+            //println!("password_nrs: {:?}", password);
+            let password_char_array = get_password_char_array(&password);
+            let result = try2decrypt(& mut data[start_of_data..start_of_data+zfr.compressed_size as usize], &password_char_array, zfr.c3c);
+            if result {
+                let password_string = get_password_string(&password);
+                println!("password found: {:?}", password_string);
+                return;
+            } else {
+                counter += 1;
+                if counter % 100 == 0 {
+                    let password_string = get_password_string(&password);
+                    println!("password wrong: {:?}", password_string);
+                }
             }
-            println!("password: {:?}", std::str::from_utf8(&password).unwrap());
-
-
-            let mut counter = 0;
-            let mut pos=0;
+    
+            let mut count_letters_at_max = 0;
+            let mut pos_of_letter_to_inc=0;
             for i in (0..pw_len).rev() {
-                if password_counter[i] == (valid_letters.len() - 1) as u8 {
-                    counter += 1;
+                if password[i] == (VALID_LETTERS.len() - 1) as u8 {
+                    count_letters_at_max += 1;
+                    password[i] = 0;
                 } else {
-                    pos = i;
+                    pos_of_letter_to_inc = i;
                     break;
                 }
             }
 
-            println!("pos: {:?}", pos);
+            //println!("pos_of_letter_to_inc: {:?}", pos_of_letter_to_inc);
+            password[pos_of_letter_to_inc] += 1;
+            //println!("password_nrs after inc: {:?}", password);
 
-            password_counter[pos] += 1;
-
-            println!("password_counter after inc: {:?}", password_counter);
-
-            if password_counter[pos] == valid_letters.len() as u8 {
-                println!("overflow");
-                if pos > 0 {
-                    password_counter[pos-1] += 1;
-                }
-                password_counter[pos] = 0;
-                println!("password_counter after overflow: {:?}", password_counter);
-            }
-
-            if counter == pw_len {
+            if count_letters_at_max == pw_len {
                 println!("we have reached the max password for this pw_len");
                 break; // we have reached the max password for this pw_len
             }
-        }
-        if 4>5{
-            let result = try2decrypt(& mut data[start_of_data..start_of_data+zfr.compressed_size as usize], &password, zfr.c3c);
-            if result {
-                println!("password: {:?}", password);
-                return;
-            } else {
-                println!("password: {:?}", password);
-            }
-            println!("result: {:?}", result);
         }
     }
 
