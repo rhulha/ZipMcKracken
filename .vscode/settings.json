@@ -1,0 +1,12 @@
+{
+    "terminal.integrated.fontSize": 16,
+    "editor.semanticTokenColorCustomizations": {
+        "enabled": true,
+        "rules": {
+            "*.mutable": {
+                "underline": false,
+            }
+        }
+    },
+    "editor.inlayHints.enabled": "offUnlessPressed"
+}
