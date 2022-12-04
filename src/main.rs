@@ -2,10 +2,9 @@
 //use std::io::Read;
 use flate2::write::DeflateDecoder;
 use std::io::Write;
-use std::io::Cursor;
-use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
 
 mod crctable;
+mod ziputils;
 
 fn crc(crc: u32, input: u8) -> u32 {
     return (crc >> 8) ^ crctable::CRCTABLE[((crc & 0xff) as u8 ^ input) as usize];
@@ -24,55 +23,11 @@ fn decrypt_byte(keys: [u32; 3]) -> u8 {
     return ((temp.wrapping_mul(temp ^ 1)) >> 8) as u8;
 }
 
-struct ZipFileRecord {
-    pub signature: u32,
-    pub version: u16,
-    pub flags: u16,
-    pub compression: u16,
-    pub time: u16,
-    pub date: u16,
-    pub c3c: u32,
-    pub compressed_size: u32,
-    pub uncompressed_size: u32,
-    pub filename_length: u16,
-    pub extra_field_length: u16,
-    //pub filename: [u8; ZipFileRecord::filename_length],
-}
 
-fn read_zip_file_record(data:&[u8]) -> ZipFileRecord {
-    let mut zfr = ZipFileRecord {
-        signature: 0,
-        version: 0,
-        flags: 0,
-        compression: 0,
-        time: 0,
-        date: 0,
-        c3c: 0,
-        compressed_size: 0,
-        uncompressed_size: 0,
-        filename_length: 0,
-        extra_field_length: 0,
-    };
 
-    let mut cursor = Cursor::new(data);
+fn try2decrypt(data: &[u8], password: &[u8], crc: u32) -> bool {
 
-    zfr.signature = cursor.read_u32::<BigEndian>().unwrap();
-    zfr.version = cursor.read_u16::<LittleEndian>().unwrap();
-    zfr.flags = cursor.read_u16::<LittleEndian>().unwrap();
-    zfr.compression = cursor.read_u16::<LittleEndian>().unwrap();
-    zfr.time = cursor.read_u16::<LittleEndian>().unwrap();
-    zfr.date = cursor.read_u16::<LittleEndian>().unwrap();
-    zfr.c3c = cursor.read_u32::<LittleEndian>().unwrap();
-    zfr.compressed_size = cursor.read_u32::<LittleEndian>().unwrap();
-    zfr.uncompressed_size = cursor.read_u32::<LittleEndian>().unwrap();
-    zfr.filename_length = cursor.read_u16::<LittleEndian>().unwrap();
-    zfr.extra_field_length = cursor.read_u16::<LittleEndian>().unwrap();
-
-    
-    return zfr;
-}
-
-fn try2decrypt(data: & mut[u8], password: &[u8], crc: u32) -> bool {
+    let mut data2 : Vec<u8> = Vec::new();
 
     // println!("data len: {}", data.len());
 
@@ -98,17 +53,21 @@ fn try2decrypt(data: & mut[u8], password: &[u8], crc: u32) -> bool {
     for i in 0..12 {
         let temp = data[i] ^ decrypt_byte(keys);
         update_keys(&mut keys, temp);
-        data[i] = temp;
+        data2.push(temp);
     }
 
-    if data[11] != (crc >> 24) as u8 {
+    // println!("data {:?}", &data2[0..11]);
+
+
+    if data2[11] != (crc >> 24) as u8 {
+        // println!("data[11] != (crc >> 24)");
         return false;
     }
 
     for i in 12..data.len() {
         let temp = data[i] ^ decrypt_byte(keys);
         update_keys(&mut keys, temp);
-        data[i] = temp;
+        data2.push(temp);
     }
 
     // println!("high order byte {:X?}", data[11]); // FULL CRC: 0xAB8C0EC3, so this print should give 0xAB
@@ -116,8 +75,9 @@ fn try2decrypt(data: & mut[u8], password: &[u8], crc: u32) -> bool {
 
     let mut deflated: Vec<u8> = Vec::new();
     let mut deflater = DeflateDecoder::new(deflated);
-    let result = deflater.write_all(&data[12..data.len()]);
+    let result = deflater.write_all(&data2[12..data2.len()]);
     if result.is_err() {
+        //println!("deflater.write_all err");
         return false;
     }
     // .unwrap();
@@ -153,31 +113,22 @@ fn get_password_char_array(password : &[u8]) -> Vec<u8> {
 fn main() {
     println!("ZipMcKracken running...");
 
-    let mut data = std::fs::read("test.zip").unwrap();
+    let data = std::fs::read("test.zip").unwrap();
 
     // let s = std::mem::size_of::<ZipFileRecord>();
     // println!("size_of ZipFileRecord: {}", s);
     // wrong due to allignment issue
 
-    let zfr = read_zip_file_record( &data );
+    let zfr = ziputils::read_zip_file_record( &data );
 
-    println!("signature: {:X?}", zfr.signature);
-    println!("version: {:?}", zfr.version);
-    println!("flags: {:X?}", zfr.flags);
-    println!("compression: {:X?}", zfr.compression);
-    println!("time: {:X?}", zfr.time); // winstructs::timestamp::DosTime
-    println!("date: {:X?}", zfr.date);
-    println!("c3c: {:X?}", zfr.c3c);
-    println!("compressed_size: {:?}", zfr.compressed_size);
-    println!("uncompressed_size: {:?}", zfr.uncompressed_size);
-    println!("filename_length: {:?}", zfr.filename_length);
-    println!("extra_field_length: {:?}", zfr.extra_field_length);
+    ziputils::print_zip_file_record(&zfr);
 
     let zip_file_record_size = 30;
     let filename_end = zip_file_record_size + zfr.filename_length as usize;
     let filename = &data[zip_file_record_size..filename_end];
 
-    println!("filename: {:?}", filename);
+    let filename_str = std::str::from_utf8(&filename).unwrap();
+    println!("filename: {:?}", filename_str);
 
     let extra = &data[filename_end..(filename_end + zfr.extra_field_length as usize)];
 
@@ -192,10 +143,18 @@ fn main() {
         for _i in 0..pw_len {
             password.push(0);
         }
+        /*
+        password[0] = 30;
+        password[1] = 39;
+        password[2] = 45;
+        password[3] = 30;
+        password[4] = 42;
+        */
+
         loop {
             //println!("password_nrs: {:?}", password);
             let password_char_array = get_password_char_array(&password);
-            let result = try2decrypt(& mut data[start_of_data..start_of_data+zfr.compressed_size as usize], &password_char_array, zfr.c3c);
+            let result = try2decrypt(&data[start_of_data..start_of_data+zfr.compressed_size as usize], &password_char_array, zfr.c3c);
             if result {
                 let password_string = get_password_string(&password);
                 println!("password found: {:?}", password_string);
