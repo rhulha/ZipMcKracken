@@ -1,9 +1,6 @@
-//use std::fs::File;
-//use std::io::Read;
 use flate2::write::DeflateDecoder;
 use std::io::Write;
 use std::thread;
-//use crossbeam_utils::thread;
 use std::process;
 use chrono;
 use std::time::Instant;
@@ -18,8 +15,6 @@ const NUM_THREADS: u8 = 14;
 lazy_static! {
     static ref NOW : Instant = Instant::now();
 }
-
-
 
 fn crc(crc: u32, input: u8) -> u32 {
     return (crc >> 8) ^ crctable::CRCTABLE[((crc & 0xff) as u8 ^ input) as usize];
@@ -149,12 +144,6 @@ fn main2(thread_nr: u8, compressed_data: &[u8], crc: u32) {
                         let password_string = get_password_string(&password);
                         println!("password wrong: {:?} {:?}", password_string, thread_nr);
                     }
-                    if get_password_string(&password) == "ENTER" {
-                        let password_string = get_password_string(&password);
-                        println!("password wrong: {:?} {:?}", password_string, thread_nr);
-                    }
-                    //let password_string = get_password_string(&password);
-                    //println!("password wrong: {:?} {:?}", password_string, thread_nr);
                 }
             }
     
@@ -231,38 +220,13 @@ fn main(){
 
     
     let handles = (0..NUM_THREADS).map(|thread_nr| {
-        println!("HELLO1");
         thread::spawn(move || {
             main2(thread_nr, compressed_data, zfr.crc);
         })
-        //println!("HELLO2");
     }).collect::<Vec<_>>();
     
     for h in handles {
         h.join().unwrap();
     }
-
-    /*
-    let mut handles = Vec::new();
-    for thread_nr in 0..NUM_THREADS {
-        println!("HELLO1");
-
-        let res = thread::scope(|s| {
-            s.spawn(|_| {
-                main2(thread_nr, compressed_data, zfr.crc);
-            });
-        });
-        handles.push(res);
-        
-        println!("HELLO2");
-        
-    }
-
-    for thread_nr in 0..NUM_THREADS {
-        println!("HELLO3");
-        handles[thread_nr as usize].as_ref().unwrap();
-        println!("HELLO4");
-    }
-    */
-    
+   
 }
